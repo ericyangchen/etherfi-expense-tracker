@@ -1,0 +1,14 @@
+[project]
+name = "etherfi-expense-tracker"
+version = "0.1.0"
+description = "Local automated expense tracking system for Ether.fi Cash cards"
+requires-python = ">=3.11"
+dependencies = [
+    "psycopg[binary]",
+    "playwright",
+    "discord.py",
+    "streamlit",
+]
+
+[project.scripts]
+etherfi = "main:cli"

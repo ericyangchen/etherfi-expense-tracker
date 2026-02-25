@@ -1,0 +1,7 @@
+data/auth_state.json
+data/cron.log
+__pycache__/
+*.pyc
+.venv/
+.env
+.idea/
