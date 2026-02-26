@@ -108,7 +108,7 @@ def scrape() -> list[dict]:
 
         # Go directly to transaction history page
         page.goto(TRANSACTION_HISTORY_URL, wait_until="load", timeout=60_000)
-        page.wait_for_timeout(4000)
+        page.wait_for_timeout(5000)
 
         if _is_session_expired(page):
             browser.close()
@@ -118,19 +118,38 @@ def scrape() -> list[dict]:
 
         _dismiss_popups(page)
 
-        # Set up download handler
-        with page.expect_download(timeout=30_000) as download_info:
-            # Click the download button (arrow-down-to-line icon)
-            download_btn = page.query_selector(
-                'button:has(svg.lucide-arrow-down-to-line), '
-                'button[aria-label*="download" i], '
-                '[aria-label*="download" i] button'
+        # Wait for page to stabilize (transaction list + download button render)
+        page.wait_for_selector("h2:has-text('Transactions')", timeout=15_000)
+        page.wait_for_timeout(3000)
+
+        # Download button selectors (Ether.fi may minify class names in prod)
+        download_selectors = [
+            'button:has(svg.lucide-arrow-down-to-line)',
+            'button:has(svg[class*="arrow-down-to-line"])',
+            'button:has(svg[class*="arrow-down"])',
+            'button[aria-label*="download" i]',
+            '[aria-label*="download" i] button',
+        ]
+        download_btn = None
+        for sel in download_selectors:
+            try:
+                download_btn = page.wait_for_selector(sel, state="visible", timeout=10_000)
+                if download_btn:
+                    break
+            except Exception:
+                continue
+
+        if not download_btn:
+            browser.close()
+            raise RuntimeError(
+                "Could not find download button on transaction-history page. "
+                "Page may have changed or a popup may be blocking it."
             )
-            if not download_btn:
-                browser.close()
-                raise RuntimeError(
-                    "Could not find download button on transaction-history page."
-                )
+
+        download_btn.scroll_into_view_if_needed()
+        page.wait_for_timeout(500)
+
+        with page.expect_download(timeout=30_000) as download_info:
             download_btn.click()
 
         download = download_info.value
