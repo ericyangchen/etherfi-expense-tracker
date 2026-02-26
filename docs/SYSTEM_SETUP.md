@@ -89,10 +89,10 @@ python main.py card list
 # Notification webhook (for CLI report commands)
 python main.py config set notify_channels '[{"type": "discord", "webhook_url": "https://discord.com/api/webhooks/..."}]'
 
-# Auto-fetch interval (default: 24 hours)
+# Auto-fetch interval (default: 24 hours; -1 to disable)
 python main.py config set fetch_interval_hours 24
 
-# Daily report hour in UTC (default: 0 = midnight)
+# Daily report hour in server local time (default: 0 = midnight, reports yesterday)
 python main.py config set daily_report_hour 0
 
 # Monthly report day (default: 1st of month)

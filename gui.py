@@ -352,7 +352,7 @@ def _page_config():
 
     rows = db.get_all_config()
 
-    _DISABLEABLE = {"daily_report_hour", "monthly_report_day"}
+    _DISABLEABLE = {"fetch_interval_hours", "daily_report_hour", "monthly_report_day"}
 
     with st.form("cfg"):
         vals: dict[str, str] = {}
@@ -362,6 +362,13 @@ def _page_config():
             if k in _DISABLEABLE:
                 cur_val = int(float(v))
                 disabled = cur_val < 0
+                defaults = {"fetch_interval_hours": 24, "daily_report_hour": 0, "monthly_report_day": 1}
+                limits = {
+                    "fetch_interval_hours": (1, 168),
+                    "daily_report_hour": (0, 23),
+                    "monthly_report_day": (1, 31),
+                }
+                lo, hi = limits.get(k, (0, 999))
                 c_en, c_num = st.columns([1, 3])
                 with c_en:
                     enabled = st.checkbox(
@@ -373,23 +380,16 @@ def _page_config():
                     num = int(
                         st.number_input(
                             k,
-                            value=max(cur_val, 0),
+                            value=max(lo, min(cur_val, hi)) if cur_val >= 0 else defaults[k],
                             step=1,
-                            min_value=0,
+                            min_value=lo,
+                            max_value=hi,
                             disabled=not enabled,
                             key=f"c_{k}",
                         )
                     )
                 vals[k] = str(num) if enabled else "-1"
 
-            elif k == "fetch_interval_hours":
-                vals[k] = str(
-                    int(
-                        st.number_input(
-                            k, value=int(float(v)), step=1, min_value=1, key=f"c_{k}"
-                        )
-                    )
-                )
             elif k == "last_fetch_at":
                 st.text_input(k, value=v, disabled=True, key=f"c_{k}")
                 vals[k] = v

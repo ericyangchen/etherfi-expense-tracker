@@ -1,15 +1,15 @@
 """Playwright scraper for Ether.fi Cash transaction history."""
 from __future__ import annotations
 
-import json
 import os
-import sys
+import tempfile
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright, Page, BrowserContext
+from playwright.sync_api import sync_playwright, Page
 
 import config
 import db
+from csv_import import parse_csv
 
 
 def _auth_state_exists() -> bool:
@@ -46,94 +46,52 @@ def login() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Scrape flow (headless, uses saved session)
+# Scrape flow: go to transaction-history, dismiss popups, download CSV
 # ---------------------------------------------------------------------------
 
-def _parse_transaction_row(row_data: dict) -> dict | None:
-    """Convert a raw scraped row dict into the DB-ready format."""
-    try:
-        timestamp = row_data.get("timestamp", "").strip()
-        description = row_data.get("description", "").strip()
-        amount_usd_raw = row_data.get("amount_usd", "0").strip()
-        amount_usd = float(amount_usd_raw)
+TRANSACTION_HISTORY_URL = "https://www.ether.fi/app/cash/transaction-history"
 
-        return {
-            "timestamp": timestamp,
-            "type": row_data.get("type", "card_spend").strip(),
-            "description": description,
-            "status": row_data.get("status", "").strip(),
-            "amount_usd": amount_usd,
-            "card": row_data.get("card", "").strip(),
-            "card_holder": row_data.get("card_holder", "").strip() or None,
-            "original_amount": float(row_data["original_amount"]) if row_data.get("original_amount") else None,
-            "original_currency": row_data.get("original_currency", "").strip() or None,
-            "cashback": float(row_data["cashback"]) if row_data.get("cashback") else None,
-            "category": row_data.get("category", "").strip() or None,
-            "dedup_key": db.make_dedup_key(timestamp, amount_usd_raw, description),
-        }
-    except (ValueError, KeyError):
-        return None
+# Popup dismiss selectors (try in order; some promotions end and popups disappear)
+_POPUP_DISMISS_SELECTORS = [
+    'button:has-text("OK")',
+    'button:has-text("Accept")',
+    'button:has-text("Accept All")',
+    '[aria-label="Close"]',
+    'button[aria-label="Close"]',
+    '[data-testid="close"]',
+    'button:has-text("Dismiss")',
+    'button:has-text("Got it")',
+    'button:has-text("Close")',
+]
 
 
-def _scrape_card_transactions(page: Page) -> list[dict]:
-    """
-    Scrape visible transaction rows from the current card view.
-
-    NOTE: This function's selectors are placeholders. They must be updated
-    to match the actual Ether.fi Cash DOM structure once the real page is
-    inspected. The general strategy:
-    1. Wait for the transaction list container to appear.
-    2. Scroll to load all transactions (if lazy-loaded).
-    3. Extract each row's data attributes or text content.
-    """
-    page.wait_for_timeout(3000)
-
-    # Try to find a CSV download/export button first (more reliable than DOM scraping)
-    # Fallback: scrape transaction rows from the DOM
-
-    # Placeholder: extract transactions via page.evaluate()
-    # The actual JS extraction logic depends on the Ether.fi DOM structure
-    raw_rows = page.evaluate("""
-        () => {
-            // This JS must be adapted to the actual Ether.fi Cash page DOM.
-            // Example: look for a transaction list table or repeated elements.
-            const rows = [];
-            // document.querySelectorAll('[data-testid="transaction-row"]').forEach(el => {
-            //     rows.push({
-            //         timestamp: el.querySelector('.timestamp')?.textContent,
-            //         description: el.querySelector('.merchant')?.textContent,
-            //         amount_usd: el.querySelector('.amount')?.textContent?.replace('$',''),
-            //         status: el.querySelector('.status')?.textContent,
-            //         card: el.querySelector('.card')?.textContent,
-            //         type: 'card_spend',
-            //     });
-            // });
-            return rows;
-        }
-    """)
-
-    txns = []
-    for raw in raw_rows:
-        parsed = _parse_transaction_row(raw)
-        if parsed:
-            txns.append(parsed)
-    return txns
+def _dismiss_popups(page: Page) -> None:
+    """Try to dismiss any modal/popup. Flexible — popups may or may not exist."""
+    page.wait_for_timeout(2000)
+    for selector in _POPUP_DISMISS_SELECTORS:
+        btn = page.query_selector(selector)
+        if btn and btn.is_visible():
+            try:
+                btn.click()
+                page.wait_for_timeout(1500)
+                break
+            except Exception:
+                pass
 
 
-def _is_session_expired(page: Page, etherfi_url: str) -> bool:
+def _is_session_expired(page: Page) -> bool:
     """Check if we got redirected to a login/connect-wallet page."""
     current = page.url.lower()
-    # If the URL changed significantly from what we expected, session is likely expired
     if "connect" in current or "login" in current or "sign" in current:
         return True
-    # Also check for a connect-wallet button as a signal
     btn = page.query_selector('button:has-text("Connect"), button:has-text("Sign in")')
-    return btn is not None
+    return btn is not None and btn.is_visible()
 
 
 def scrape() -> list[dict]:
     """
     Run a headless scrape using saved session state.
+    Navigates to transaction-history, dismisses popups, clicks download CSV.
     Returns list of transaction dicts ready for DB upsert.
     Raises RuntimeError if session is expired.
     """
@@ -143,39 +101,51 @@ def scrape() -> list[dict]:
             "Run 'python main.py login' first."
         )
 
-    etherfi_url = db.get_config("etherfi_url")
-    all_txns: list[dict] = []
-
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(storage_state=config.AUTH_STATE_PATH)
         page = context.new_page()
 
-        page.goto(etherfi_url, wait_until="networkidle")
+        # Go directly to transaction history page
+        page.goto(TRANSACTION_HISTORY_URL, wait_until="load", timeout=60_000)
+        page.wait_for_timeout(4000)
 
-        if _is_session_expired(page, etherfi_url):
+        if _is_session_expired(page):
             browser.close()
             raise RuntimeError(
                 "Session expired. Run 'python main.py login' to re-authenticate."
             )
 
-        # Find all card selector tabs/buttons
-        # NOTE: selectors are placeholders, must be adapted to actual DOM
-        card_tabs = page.query_selector_all('[data-testid="card-tab"], .card-selector button')
+        _dismiss_popups(page)
 
-        if not card_tabs:
-            # Single card or no tabs visible — scrape current view
-            txns = _scrape_card_transactions(page)
-            all_txns.extend(txns)
-        else:
-            for tab in card_tabs:
-                tab.click()
-                page.wait_for_timeout(2000)
-                txns = _scrape_card_transactions(page)
-                all_txns.extend(txns)
+        # Set up download handler
+        with page.expect_download(timeout=30_000) as download_info:
+            # Click the download button (arrow-down-to-line icon)
+            download_btn = page.query_selector(
+                'button:has(svg.lucide-arrow-down-to-line), '
+                'button[aria-label*="download" i], '
+                '[aria-label*="download" i] button'
+            )
+            if not download_btn:
+                browser.close()
+                raise RuntimeError(
+                    "Could not find download button on transaction-history page."
+                )
+            download_btn.click()
+
+        download = download_info.value
+        with tempfile.NamedTemporaryFile(
+            suffix=".csv", delete=False
+        ) as f:
+            tmp_path = f.name
+        download.save_as(tmp_path)
+        try:
+            txns = parse_csv(tmp_path)
+        finally:
+            os.unlink(tmp_path)
 
         # Save updated session state
         context.storage_state(path=config.AUTH_STATE_PATH)
         browser.close()
 
-    return all_txns
+    return txns

@@ -104,8 +104,8 @@ The bot automatically runs these (no cron needed):
 
 | Task | Schedule | Description |
 |------|----------|-------------|
-| Auto-fetch | Every `fetch_interval_hours` (default 24h) | Scrapes new transaction data |
-| Daily report | At `daily_report_hour` local time (default midnight) | Reports unreported transactions, skips if none. Set to `-1` to disable. |
+| Auto-fetch | Every `fetch_interval_hours` (default 24h) | Scrapes new transaction data. Set to `-1` to disable. |
+| Daily report | At `daily_report_hour` local time (default midnight) | Scrapes + reports yesterday's transactions. Set to `-1` to disable. |
 | Monthly report | On `monthly_report_day` (default 1st) at midnight | Previous month's full summary. Set to `-1` to disable. |
 | Session check | After each auto-fetch | Warns if Ether.fi session expires in ≤7 days |
 
@@ -113,6 +113,8 @@ Change schedules via CLI or the GUI (**Config** tab):
 
 ```bash
 python main.py config set fetch_interval_hours 12
+# Disable auto-fetch:
+python main.py config set fetch_interval_hours -1
 python main.py config set daily_report_hour 8
 python main.py config set monthly_report_day 1
 # Disable daily report:

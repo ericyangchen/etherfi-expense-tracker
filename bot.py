@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
@@ -75,10 +75,13 @@ class EtherfiBot(discord.Client):
 
     @tasks.loop(minutes=30)
     async def auto_fetch(self) -> None:
-        """Scrape data every fetch_interval_hours."""
+        """Scrape data every fetch_interval_hours. Set to -1 to disable."""
         try:
-            last = db.get_last_fetch_at()
             interval = db.get_fetch_interval_hours()
+            if interval < 0:
+                return
+
+            last = db.get_last_fetch_at()
             now = datetime.now(timezone.utc)
             elapsed = (now - last).total_seconds() / 3600
 
@@ -87,7 +90,6 @@ class EtherfiBot(discord.Client):
 
             log.info(f"Auto-fetch: {elapsed:.1f}h since last fetch")
             await self._run_scrape()
-            db.update_last_fetch_at()
 
             await self._check_session_expiry()
         except Exception as e:
@@ -95,7 +97,7 @@ class EtherfiBot(discord.Client):
 
     @tasks.loop(minutes=1)
     async def daily_report_task(self) -> None:
-        """Send daily report of unreported transactions at configured hour."""
+        """At midnight (or configured hour), report yesterday's transactions."""
         try:
             report_hour = int(db.get_config("daily_report_hour"))
             if report_hour < 0:
@@ -105,20 +107,30 @@ class EtherfiBot(discord.Client):
             if now.hour != report_hour or now.minute != 0:
                 return
 
-            txns = db.get_unreported_transactions()
-            if not txns or not self.channel:
+            if not self.channel:
                 return
 
-            log.info(f"Daily report: {len(txns)} unreported transactions")
-            report = analytics.format_daily_report(txns)
-            db.mark_as_reported([t["id"] for t in txns])
+            # Scrape first to get latest data, then report yesterday
+            await self._run_scrape()
+            yesterday = now.date() - timedelta(days=1)
+            txns = db.get_transactions_for_date(
+                yesterday.year, yesterday.month, yesterday.day
+            )
+            if not txns:
+                return
+
+            date_str = yesterday.strftime("%Y/%m/%d")
+            log.info(f"Daily report: {len(txns)} transactions for {date_str}")
+            report = analytics.format_daily_report(
+                txns, title=f"Ether.fi Daily Report - {date_str}"
+            )
             await self._send_long(self.channel, report)
         except Exception as e:
             log.error(f"Daily report error: {e}")
 
     @tasks.loop(hours=1)
     async def monthly_report_task(self) -> None:
-        """Send monthly summary on the configured day."""
+        """On 1st at midnight, report previous month's summary."""
         try:
             report_day = int(db.get_config("monthly_report_day"))
             if report_day < 0:
@@ -136,6 +148,7 @@ class EtherfiBot(discord.Client):
             if not self.channel:
                 return
 
+            await self._run_scrape()
             log.info(f"Monthly report for {year}/{month:02d}")
             summary = analytics.get_monthly_summary(year, month)
             report = analytics.format_monthly_report(summary)
@@ -176,8 +189,8 @@ class EtherfiBot(discord.Client):
         except Exception:
             pass
 
-    async def _run_scrape(self) -> None:
-        """Run the scraper in a thread to avoid blocking the event loop."""
+    async def _run_scrape(self) -> bool:
+        """Run the scraper in a thread. Returns True on success, False on failure (sends noti)."""
         try:
             import scraper
 
@@ -185,10 +198,13 @@ class EtherfiBot(discord.Client):
             if txns:
                 affected = db.upsert_transactions(txns)
                 log.info(f"Scraped {len(txns)} txns ({affected} new/updated)")
-        except RuntimeError as e:
+            db.update_last_fetch_at()
+            return True
+        except Exception as e:
             log.error(f"Scrape failed: {e}")
             if self.channel:
                 await self.channel.send(f"Scrape error: {e}")
+            return False
 
     async def _send_long(self, channel: discord.abc.Messageable, text: str) -> None:
         """Send a message, splitting into chunks if needed (Discord 2000 char limit)."""
@@ -261,7 +277,11 @@ async def cmd_report_latest(interaction: discord.Interaction) -> None:
         return
     await interaction.response.defer()
 
-    await bot._run_scrape()
+    if not await bot._run_scrape():
+        await interaction.followup.send(
+            "Scrape failed (see message above). No new transactions reported."
+        )
+        return
     txns = db.get_unreported_transactions()
     if not txns:
         await interaction.followup.send("No new transactions to report.")
@@ -291,7 +311,11 @@ async def cmd_report_daily(
         return
     await interaction.response.defer()
 
-    await bot._run_scrape()
+    if not await bot._run_scrape():
+        await interaction.followup.send(
+            "Scrape failed (see message above). No daily report."
+        )
+        return
     if year is not None and month is not None and day is not None:
         txns = db.get_transactions_for_date(year, month, day)
         date_str = f"{year}/{month:02d}/{day:02d}"

@@ -65,7 +65,7 @@ Long-running bot (Docker) with slash commands and scheduled tasks:
   - `/report_monthly` — month summary (optional `year`, `month`; optional `top` for # of top merchants, default 10)
 - **Scheduled tasks** (all using server local time):
   - Auto-fetch every `fetch_interval_hours` (default: 24)
-  - Daily report at `daily_report_hour` (default: midnight, `-1` to disable)
+  - Daily report at `daily_report_hour` (default midnight): scrapes + reports yesterday's transactions
   - Monthly report on `monthly_report_day` (default: 1st, `-1` to disable)
 - **Session expiry warning** — alerts in Discord when Ether.fi session ≤7 days from expiring
 
@@ -99,7 +99,7 @@ CLI report commands print to the terminal. Discord notifications are handled by 
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `fetch_interval_hours` | `24` | Auto-fetch interval |
+| `fetch_interval_hours` | `24` | Auto-fetch interval (`-1` to disable) |
 | `daily_report_hour` | `0` | Hour (server local) for daily report (`-1` to disable) |
 | `monthly_report_day` | `1` | Day of month for monthly report (`-1` to disable) |
 | `etherfi_url` | `https://www.ether.fi/app/cash/safe` | Ether.fi Cash app URL |
