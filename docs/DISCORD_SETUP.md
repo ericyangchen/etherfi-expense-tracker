@@ -46,6 +46,8 @@ Edit `.env`:
 ```
 DISCORD_BOT_TOKEN=your_bot_token_here
 DISCORD_CHANNEL_ID=your_channel_id_here
+
+# Optional: TZ=Asia/Taipei  (for Taiwan; default is America/New_York)
 ```
 
 ### 5. Start the Bot
@@ -123,6 +125,16 @@ python main.py config set daily_report_hour -1
 
 Or launch `python main.py gui` and use the toggle + number input on the **Config** tab.
 
+## Timezone
+
+Scheduled reports use the container's local time. Default is `America/New_York`. To use your timezone (e.g. Taiwan midnight), add to `.env`:
+
+```
+TZ=Asia/Taipei
+```
+
+Then restart: `docker compose up -d --build`
+
 ## Troubleshooting
 
 | Issue | Fix |
@@ -133,3 +145,4 @@ Or launch `python main.py gui` and use the toggle + number input on the **Config
 | Bot can't send messages | Check bot has Send Messages permission in the channel |
 | Playwright error in logs | Rebuild image: `docker compose down && docker compose up -d --build` |
 | Scrape errors | Session may be expired. Run `python main.py login` to refresh |
+| No report at expected time | Check timezone: `docker compose exec bot date`. Add `TZ=Asia/Taipei` to `.env` if needed. Check logs: `docker compose logs bot \| grep -i report` |

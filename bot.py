@@ -110,13 +110,13 @@ class EtherfiBot(discord.Client):
             if not self.channel:
                 return
 
-            # Scrape first to get latest data, then report yesterday
-            await self._run_scrape()
             yesterday = now.date() - timedelta(days=1)
+            await self._run_scrape()  # Best-effort; use DB if scrape fails
             txns = db.get_transactions_for_date(
                 yesterday.year, yesterday.month, yesterday.day
             )
             if not txns:
+                log.info(f"Daily report: no transactions for {yesterday}, skipping")
                 return
 
             date_str = yesterday.strftime("%Y/%m/%d")
@@ -148,7 +148,7 @@ class EtherfiBot(discord.Client):
             if not self.channel:
                 return
 
-            await self._run_scrape()
+            await self._run_scrape()  # Best-effort; use DB if scrape fails
             log.info(f"Monthly report for {year}/{month:02d}")
             summary = analytics.get_monthly_summary(year, month)
             report = analytics.format_monthly_report(summary)
