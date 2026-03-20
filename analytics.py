@@ -28,6 +28,13 @@ class CategorySummary:
 
 
 @dataclass
+class FundingLine:
+    type: str
+    total: Decimal
+    txn_count: int
+
+
+@dataclass
 class MonthlySummary:
     year: int
     month: int
@@ -35,6 +42,7 @@ class MonthlySummary:
     categories: list[CategorySummary]
     uncategorized_cards: list[CardSummary]
     overall_top_merchants: list[dict]
+    funding: list[FundingLine] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +102,12 @@ def get_monthly_summary(
     grand_total = sum((cs.total for cs in card_summaries.values()), Decimal("0"))
     overall_top = db.get_top_merchants(year, month, limit=top_limit)
 
+    funding_rows = db.get_monthly_funding(year, month)
+    funding = [
+        FundingLine(type=r["type"], total=r["total"], txn_count=r["txn_count"])
+        for r in funding_rows
+    ]
+
     return MonthlySummary(
         year=year,
         month=month,
@@ -101,6 +115,7 @@ def get_monthly_summary(
         categories=cat_summaries,
         uncategorized_cards=uncategorized,
         overall_top_merchants=overall_top,
+        funding=funding,
     )
 
 
@@ -135,6 +150,14 @@ def format_monthly_report(summary: MonthlySummary) -> str:
                 lines.append("    Top:")
                 for m in cs.top_merchants:
                     lines.append(f"      - {m['merchant']}: ${m['total']:,.2f}")
+        lines.append("")
+
+    if summary.funding:
+        funding_total = sum(f.total for f in summary.funding)
+        lines.append(f"Funding (${funding_total:,.2f}):")
+        for f in summary.funding:
+            label = f.type.replace("_", " ").title()
+            lines.append(f"  {label}: ${f.total:,.2f} ({f.txn_count} txns)")
         lines.append("")
 
     if summary.overall_top_merchants:

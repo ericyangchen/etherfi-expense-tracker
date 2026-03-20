@@ -418,9 +418,31 @@ def get_monthly_totals_by_card(year: int, month: int) -> list[dict[str, Any]]:
         WHERE EXTRACT(YEAR FROM t.timestamp) = %s
           AND EXTRACT(MONTH FROM t.timestamp) = %s
           AND t.status != 'CANCELLED'
+          AND t.type IN ('card_spend', 'card_refund', 'physical_card_refund')
         GROUP BY t.card, c.nickname
         ORDER BY total DESC
     """
+    with get_conn() as conn:
+        return conn.execute(sql, (year, month)).fetchall()
+
+
+_FUNDING_TYPES = ('topup', 'swap', 'physical_card_order')
+
+
+def get_monthly_funding(year: int, month: int) -> list[dict[str, Any]]:
+    """Non-spend activity (topups, swaps, etc.) for a given month."""
+    sql = """
+        SELECT type, SUM(amount_usd) AS total, COUNT(*) AS txn_count
+        FROM transactions
+        WHERE EXTRACT(YEAR FROM timestamp) = %s
+          AND EXTRACT(MONTH FROM timestamp) = %s
+          AND status != 'CANCELLED'
+          AND type = ANY(%s)
+        GROUP BY type
+        ORDER BY total DESC
+    """
+    with get_conn() as conn:
+        return conn.execute(sql, (year, month, list(_FUNDING_TYPES))).fetchall()
     with get_conn() as conn:
         return conn.execute(sql, (year, month)).fetchall()
 
@@ -437,7 +459,7 @@ def get_top_merchants(
         "EXTRACT(YEAR FROM t.timestamp) = %(year)s",
         "EXTRACT(MONTH FROM t.timestamp) = %(month)s",
         "t.status != 'CANCELLED'",
-        "t.type = 'card_spend'",
+        "t.type IN ('card_spend', 'card_refund', 'physical_card_refund')",
     ]
     params: dict[str, Any] = {"year": year, "month": month, "limit": limit}
     joins = ""
