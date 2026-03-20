@@ -3,11 +3,31 @@
 from __future__ import annotations
 
 import csv
+import re
 import sys
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import db
+
+
+_JS_DATE_RE = re.compile(
+    r"^[A-Z][a-z]{2}\s+"       # Day name
+    r"([A-Z][a-z]{2}\s+\d{1,2}\s+\d{4})\s+"  # Mon DD YYYY
+    r"(\d{2}:\d{2}:\d{2})\s+"  # HH:MM:SS
+    r"GMT([+-]\d{4})"           # offset
+)
+
+
+def _normalize_timestamp(raw: str) -> str:
+    """Convert JS Date.toString() format to ISO 8601, pass through otherwise."""
+    m = _JS_DATE_RE.match(raw)
+    if m:
+        clean = f"{m.group(1)} {m.group(2)} {m.group(3)}"
+        dt = datetime.strptime(clean, "%b %d %Y %H:%M:%S %z")
+        return dt.isoformat()
+    return raw
 
 
 def _parse_decimal(value: str) -> Decimal | None:
@@ -32,7 +52,7 @@ def parse_csv(filepath: str | Path) -> list[dict]:
                 continue
 
             txn = {
-                "timestamp": timestamp,
+                "timestamp": _normalize_timestamp(timestamp),
                 "type": row["type"].strip(),
                 "description": description,
                 "status": status,
