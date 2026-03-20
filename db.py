@@ -443,8 +443,21 @@ def get_monthly_funding(year: int, month: int) -> list[dict[str, Any]]:
     """
     with get_conn() as conn:
         return conn.execute(sql, (year, month, list(_FUNDING_TYPES))).fetchall()
+
+
+def get_monthly_funding_transactions(year: int, month: int) -> list[dict[str, Any]]:
+    """Individual funding transactions for a given month."""
+    sql = """
+        SELECT *
+        FROM transactions
+        WHERE EXTRACT(YEAR FROM timestamp) = %s
+          AND EXTRACT(MONTH FROM timestamp) = %s
+          AND status != 'CANCELLED'
+          AND type = ANY(%s)
+        ORDER BY timestamp DESC
+    """
     with get_conn() as conn:
-        return conn.execute(sql, (year, month)).fetchall()
+        return conn.execute(sql, (year, month, list(_FUNDING_TYPES))).fetchall()
 
 
 def get_top_merchants(

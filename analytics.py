@@ -43,6 +43,7 @@ class MonthlySummary:
     uncategorized_cards: list[CardSummary]
     overall_top_merchants: list[dict]
     funding: list[FundingLine] = field(default_factory=list)
+    funding_transactions: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +108,7 @@ def get_monthly_summary(
         FundingLine(type=r["type"], total=r["total"], txn_count=r["txn_count"])
         for r in funding_rows
     ]
+    funding_txns = db.get_monthly_funding_transactions(year, month)
 
     return MonthlySummary(
         year=year,
@@ -116,6 +118,7 @@ def get_monthly_summary(
         uncategorized_cards=uncategorized,
         overall_top_merchants=overall_top,
         funding=funding,
+        funding_transactions=funding_txns,
     )
 
 
@@ -155,9 +158,13 @@ def format_monthly_report(summary: MonthlySummary) -> str:
     if summary.funding:
         funding_total = sum(f.total for f in summary.funding)
         lines.append(f"Funding (${funding_total:,.2f}):")
-        for f in summary.funding:
-            label = f.type.replace("_", " ").title()
-            lines.append(f"  {label}: ${f.total:,.2f} ({f.txn_count} txns)")
+        for t in summary.funding_transactions:
+            desc = t["description"].strip()
+            amt = t["amount_usd"]
+            label = t["type"].replace("_", " ").title()
+            ts = t["timestamp"]
+            date_str = ts.strftime("%m/%d") if hasattr(ts, "strftime") else str(ts)[:10]
+            lines.append(f"  {date_str}  {desc:<25s} ${amt:>10,.2f}  [{label}]")
         lines.append("")
 
     if summary.overall_top_merchants:
@@ -171,6 +178,9 @@ def format_monthly_report(summary: MonthlySummary) -> str:
 # ---------------------------------------------------------------------------
 # Daily / latest report
 # ---------------------------------------------------------------------------
+
+_FUNDING_TYPES = {'topup', 'swap', 'physical_card_order'}
+
 
 def format_daily_report(txns: list[dict[str, Any]], title: str | None = None) -> str:
     if not txns:
@@ -186,9 +196,13 @@ def format_daily_report(txns: list[dict[str, Any]], title: str | None = None) ->
     lines.append(f"{len(txns)} transaction(s)")
     lines.append("")
 
+    funding_txns: list[dict] = []
     card_map: dict[str, list[dict]] = defaultdict(list)
     for txn in txns:
-        card_map[txn["card"]].append(txn)
+        if txn["type"] in _FUNDING_TYPES:
+            funding_txns.append(txn)
+        else:
+            card_map[txn["card"]].append(txn)
 
     for card_id in sorted(card_map.keys()):
         card_txns = card_map[card_id]
@@ -199,8 +213,18 @@ def format_daily_report(txns: list[dict[str, Any]], title: str | None = None) ->
         for t in card_txns:
             desc = t["description"].strip()
             amt = t["amount_usd"]
-            status = t["status"].capitalize()
-            lines.append(f"  {desc:<30s} ${amt:>10,.2f}  ({status})")
+            status = t["status"].strip()
+            status_str = f"  ({status.capitalize()})" if status else ""
+            lines.append(f"  {desc:<30s} ${amt:>10,.2f}{status_str}")
+        lines.append("")
+
+    if funding_txns:
+        lines.append("Funding:")
+        for t in funding_txns:
+            desc = t["description"].strip()
+            amt = t["amount_usd"]
+            label = t["type"].replace("_", " ").title()
+            lines.append(f"  {desc:<30s} ${amt:>10,.2f}  [{label}]")
         lines.append("")
 
     return "\n".join(lines).rstrip()
