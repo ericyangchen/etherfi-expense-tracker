@@ -511,3 +511,31 @@ def migrate_mark_existing_reported() -> None:
         conn.execute(
             "UPDATE transactions SET reported_at = NOW() WHERE reported_at IS NULL"
         )
+
+
+def deduplicate_transactions() -> int:
+    """Remove duplicate rows caused by sub-second timestamp drift.
+
+    Keeps the row with the newest updated_at (or lowest id as tiebreaker)
+    among rows that share the same (second-truncated timestamp, amount, description).
+    Returns the number of rows deleted.
+    """
+    sql = """
+    DELETE FROM transactions
+    WHERE id IN (
+        SELECT id FROM (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY DATE_TRUNC('second', timestamp),
+                                    amount_usd,
+                                    description
+                       ORDER BY updated_at DESC NULLS LAST, id DESC
+                   ) AS rn
+            FROM transactions
+        ) ranked
+        WHERE rn > 1
+    )
+    """
+    with get_conn() as conn:
+        result = conn.execute(sql)
+        return result.rowcount

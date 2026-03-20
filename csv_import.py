@@ -21,13 +21,21 @@ _JS_DATE_RE = re.compile(
 
 
 def _normalize_timestamp(raw: str) -> str:
-    """Convert JS Date.toString() format to ISO 8601, pass through otherwise."""
+    """Normalize any timestamp to ISO 8601 truncated to whole seconds.
+
+    Handles JS Date.toString() and ISO 8601 (with or without sub-second
+    precision) so the dedup key is stable across different CSV formats.
+    """
     m = _JS_DATE_RE.match(raw)
     if m:
         clean = f"{m.group(1)} {m.group(2)} {m.group(3)}"
         dt = datetime.strptime(clean, "%b %d %Y %H:%M:%S %z")
-        return dt.isoformat()
-    return raw
+    else:
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            return raw
+    return dt.replace(microsecond=0).isoformat()
 
 
 def _parse_decimal(value: str) -> Decimal | None:
@@ -51,8 +59,9 @@ def parse_csv(filepath: str | Path) -> list[dict]:
             if amount_usd is None:
                 continue
 
+            ts_normalized = _normalize_timestamp(timestamp)
             txn = {
-                "timestamp": _normalize_timestamp(timestamp),
+                "timestamp": ts_normalized,
                 "type": row["type"].strip(),
                 "description": description,
                 "status": status,
@@ -63,7 +72,7 @@ def parse_csv(filepath: str | Path) -> list[dict]:
                 "original_currency": row.get("original currency", "").strip() or None,
                 "cashback": _parse_decimal(row.get("cashback earned", "")),
                 "category": row.get("category", "").strip() or None,
-                "dedup_key": db.make_dedup_key(timestamp, amount_usd_raw, description),
+                "dedup_key": db.make_dedup_key(ts_normalized, amount_usd_raw, description),
             }
             rows.append(txn)
     return rows
