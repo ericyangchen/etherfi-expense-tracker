@@ -50,6 +50,10 @@ def cmd_scrape(args: argparse.Namespace) -> None:
     else:
         print("[scrape] No transactions scraped (selectors may need updating)")
 
+    dupes = db.deduplicate_transactions()
+    if dupes:
+        print(f"[scrape] Cleaned {dupes} duplicate(s)")
+
     db.update_last_fetch_at()
     print(f"[scrape] Done. {affected} new/updated.")
 
@@ -63,6 +67,9 @@ def cmd_import(args: argparse.Namespace) -> None:
     print(f"[import] Importing {filepath}...")
     txns = csv_import.parse_csv(filepath)
     affected = db.upsert_transactions(txns)
+    dupes = db.deduplicate_transactions()
+    if dupes:
+        print(f"[import] Cleaned {dupes} duplicate(s)")
     print(f"[import] Processed {len(txns)} transactions ({affected} new/updated)")
 
 

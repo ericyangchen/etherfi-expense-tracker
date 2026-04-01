@@ -285,7 +285,13 @@ def set_category_cards(category: str, cards: list[str]) -> None:
 
 
 def make_dedup_key(timestamp: str, amount_usd: str, description: str) -> str:
-    raw = f"{timestamp}|{amount_usd}|{description.strip()}"
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        amt_norm = f"{Decimal(amount_usd.strip()):.2f}"
+    except (InvalidOperation, AttributeError):
+        amt_norm = amount_usd.strip()
+    raw = f"{timestamp}|{amt_norm}|{description.strip()}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -546,6 +552,29 @@ def migrate_mark_existing_reported() -> None:
         conn.execute(
             "UPDATE transactions SET reported_at = NOW() WHERE reported_at IS NULL"
         )
+
+
+def recompute_dedup_keys() -> int:
+    """Recompute all dedup keys from stored DB values.
+
+    Ensures consistency after changes to the dedup key algorithm.
+    Returns number of rows updated.
+    """
+    updated = 0
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, timestamp, amount_usd, description FROM transactions"
+        ).fetchall()
+        for row in rows:
+            ts = row["timestamp"].astimezone(timezone.utc).replace(microsecond=0).isoformat()
+            amt = f"{row['amount_usd']:.2f}"
+            new_key = make_dedup_key(ts, amt, row["description"])
+            result = conn.execute(
+                "UPDATE transactions SET dedup_key = %s WHERE id = %s AND dedup_key IS DISTINCT FROM %s",
+                (new_key, row["id"], new_key),
+            )
+            updated += result.rowcount
+    return updated
 
 
 def deduplicate_transactions() -> int:

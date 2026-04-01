@@ -3,28 +3,35 @@
 from __future__ import annotations
 
 import csv
+import logging
 import re
 import sys
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
+from dateutil import parser as dtparser
+
 import db
 
+_log = logging.getLogger(__name__)
 
+# JS Date.toString() — dateutil misreads "GMT+0800" (treats GMT as tz, drops offset)
 _JS_DATE_RE = re.compile(
-    r"^[A-Z][a-z]{2}\s+"       # Day name
-    r"([A-Z][a-z]{2}\s+\d{1,2}\s+\d{4})\s+"  # Mon DD YYYY
-    r"(\d{2}:\d{2}:\d{2})\s+"  # HH:MM:SS
-    r"GMT([+-]\d{4})"           # offset
+    r"^[A-Z][a-z]{2}\s+"
+    r"([A-Z][a-z]{2}\s+\d{1,2}\s+\d{4})\s+"
+    r"(\d{2}:\d{2}:\d{2})\s+"
+    r"GMT([+-]\d{4})"
 )
 
 
 def _normalize_timestamp(raw: str) -> str:
-    """Normalize any timestamp to ISO 8601 truncated to whole seconds.
+    """Parse any reasonable datetime string, convert to UTC, truncate to whole seconds.
 
-    Handles JS Date.toString() and ISO 8601 (with or without sub-second
-    precision) so the dedup key is stable across different CSV formats.
+    Handles JS Date.toString() explicitly (dateutil misparses its GMT±HHMM
+    offset), then falls back to dateutil.parser for everything else.
+    Always returns a canonical ISO 8601 UTC string so the dedup key is
+    format-independent.
     """
     m = _JS_DATE_RE.match(raw)
     if m:
@@ -32,10 +39,13 @@ def _normalize_timestamp(raw: str) -> str:
         dt = datetime.strptime(clean, "%b %d %Y %H:%M:%S %z")
     else:
         try:
-            dt = datetime.fromisoformat(raw)
-        except ValueError:
+            dt = dtparser.parse(raw)
+        except (ValueError, OverflowError):
+            _log.warning("Unparseable timestamp, using raw: %r", raw)
             return raw
-    return dt.replace(microsecond=0).isoformat()
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _parse_decimal(value: str) -> Decimal | None:
