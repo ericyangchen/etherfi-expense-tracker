@@ -8,3 +8,4 @@ AUTH_STATE_PATH = os.path.join(os.path.dirname(__file__), "data", "auth_state.js
 
 DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", "0"))
+DISCORD_MONTHLY_CHANNEL_ID = int(os.environ.get("DISCORD_MONTHLY_CHANNEL_ID", "0"))

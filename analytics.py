@@ -204,22 +204,62 @@ def format_daily_report(txns: list[dict[str, Any]], title: str | None = None) ->
         else:
             card_map[txn["card"]].append(txn)
 
-    for card_id in sorted(card_map.keys()):
+    card_totals: dict[str, Decimal] = {
+        card_id: sum((t["amount_usd"] for t in ts), Decimal("0"))
+        for card_id, ts in card_map.items()
+    }
+    card_categories: dict[str, list[str]] = {
+        card_id: db.get_card_categories(card_id) for card_id in card_map
+    }
+
+    cat_to_cards: dict[str, list[str]] = defaultdict(list)
+    uncategorized_cards: list[str] = []
+    for card_id, cats in card_categories.items():
+        if cats:
+            for c in cats:
+                cat_to_cards[c].append(card_id)
+        else:
+            uncategorized_cards.append(card_id)
+
+    def _render_card(card_id: str) -> None:
         card_txns = card_map[card_id]
         display = db.get_card_display(card_id)
-        categories = db.get_card_categories(card_id)
-        cat_str = f" [{', '.join(categories)}]" if categories else ""
-        lines.append(f"{display}{cat_str}:")
+        total = card_totals[card_id]
+        lines.append(f"  {display}: ${total:,.2f} ({len(card_txns)} txns)")
         for t in card_txns:
             desc = t["description"].strip()
             amt = t["amount_usd"]
             status = t["status"].strip()
             status_str = f"  ({status.capitalize()})" if status else ""
-            lines.append(f"  {desc:<30s} ${amt:>10,.2f}{status_str}")
+            lines.append(f"    {desc:<30s} ${amt:>10,.2f}{status_str}")
+
+    for cat_name in sorted(cat_to_cards.keys()):
+        cards_in_cat = sorted(cat_to_cards[cat_name])
+        cat_total = sum((card_totals[c] for c in cards_in_cat), Decimal("0"))
+        lines.append(f"{cat_name} (${cat_total:,.2f}):")
+        for card_id in cards_in_cat:
+            _render_card(card_id)
+        lines.append("")
+
+    if uncategorized_cards:
+        uncat_total = sum(
+            (card_totals[c] for c in uncategorized_cards), Decimal("0")
+        )
+        lines.append(f"Uncategorized (${uncat_total:,.2f}):")
+        for card_id in sorted(uncategorized_cards):
+            _render_card(card_id)
+        lines.append("")
+
+    if card_totals:
+        grand_total = sum(card_totals.values(), Decimal("0"))
+        lines.append(f"Grand Total: ${grand_total:,.2f}")
         lines.append("")
 
     if funding_txns:
-        lines.append("Funding:")
+        funding_total = sum(
+            (t["amount_usd"] for t in funding_txns), Decimal("0")
+        )
+        lines.append(f"Funding (${funding_total:,.2f}):")
         for t in funding_txns:
             desc = t["description"].strip()
             amt = t["amount_usd"]

@@ -24,6 +24,7 @@ class EtherfiBot(discord.Client):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
         self.channel: discord.TextChannel | None = None
+        self.monthly_channel: discord.TextChannel | None = None
         self.tree = app_commands.CommandTree(self)
 
     # ------------------------------------------------------------------
@@ -47,6 +48,16 @@ class EtherfiBot(discord.Client):
             log.info(f"Bound to #{ch.name} ({ch.id})")
         else:
             log.warning(f"Channel {config.DISCORD_CHANNEL_ID} not found")
+
+        if config.DISCORD_MONTHLY_CHANNEL_ID:
+            mch = self.get_channel(config.DISCORD_MONTHLY_CHANNEL_ID)
+            if mch and isinstance(mch, discord.TextChannel):
+                self.monthly_channel = mch
+                log.info(f"Bound monthly channel to #{mch.name} ({mch.id})")
+            else:
+                log.warning(
+                    f"Monthly channel {config.DISCORD_MONTHLY_CHANNEL_ID} not found"
+                )
 
         try:
             if self.channel:
@@ -145,14 +156,15 @@ class EtherfiBot(discord.Client):
             else:
                 year, month = now.year, now.month - 1
 
-            if not self.channel:
+            target = self.monthly_channel or self.channel
+            if not target:
                 return
 
             await self._run_scrape()  # Best-effort; use DB if scrape fails
             log.info(f"Monthly report for {year}/{month:02d}")
             summary = analytics.get_monthly_summary(year, month)
             report = analytics.format_monthly_report(summary)
-            await self._send_long(self.channel, report)
+            await self._send_long(target, report)
         except Exception as e:
             log.error(f"Monthly report error: {e}")
 
@@ -257,9 +269,20 @@ class EtherfiBot(discord.Client):
 # ---------------------------------------------------------------------------
 
 
-async def _check_channel(interaction: discord.Interaction, bot: EtherfiBot) -> bool:
+async def _check_channel(
+    interaction: discord.Interaction,
+    bot: EtherfiBot,
+    *,
+    allow_monthly: bool = False,
+) -> bool:
     """Return False if channel is wrong, after sending ephemeral message."""
-    if bot.channel and interaction.channel_id != bot.channel.id:
+    allowed_ids: set[int] = set()
+    if bot.channel:
+        allowed_ids.add(bot.channel.id)
+    if allow_monthly and bot.monthly_channel:
+        allowed_ids.add(bot.monthly_channel.id)
+
+    if allowed_ids and interaction.channel_id not in allowed_ids:
         await interaction.response.send_message(
             "Use this command in the configured tracker channel.",
             ephemeral=True,
@@ -347,7 +370,7 @@ async def cmd_report_monthly(
     top: app_commands.Range[int, 1, 50] = 10,
 ) -> None:
     bot = interaction.client
-    if not await _check_channel(interaction, bot):
+    if not await _check_channel(interaction, bot, allow_monthly=True):
         return
     await interaction.response.defer()
 

@@ -8,6 +8,8 @@ dependencies = [
     "playwright",
     "discord.py",
     "streamlit",
+    "openpyxl",
+    "python-dateutil",
 ]
 
 [project.scripts]

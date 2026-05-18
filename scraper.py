@@ -1,9 +1,14 @@
 """Playwright scraper for Ether.fi Cash transaction history."""
 from __future__ import annotations
 
+import logging
 import os
+import shutil
 import tempfile
+from datetime import datetime
 from pathlib import Path
+
+_log = logging.getLogger(__name__)
 
 from playwright.sync_api import sync_playwright, Page
 
@@ -160,6 +165,13 @@ def scrape() -> list[dict]:
         download.save_as(tmp_path)
         try:
             txns = parse_csv(tmp_path)
+        except Exception as e:
+            debug_dir = Path(config.AUTH_STATE_PATH).parent / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            debug_path = debug_dir / f"failed_{datetime.now():%Y%m%d_%H%M%S}.csv"
+            shutil.copyfile(tmp_path, debug_path)
+            _log.error("CSV parse failed (%s); saved raw to %s", e, debug_path)
+            raise RuntimeError(f"CSV parse failed: {e}. Raw CSV at {debug_path}")
         finally:
             os.unlink(tmp_path)
 

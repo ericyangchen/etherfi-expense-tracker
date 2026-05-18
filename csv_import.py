@@ -48,44 +48,144 @@ def _normalize_timestamp(raw: str) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def _parse_decimal(value: str) -> Decimal | None:
+def _parse_decimal(value) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            return Decimal(str(value))
+        except InvalidOperation:
+            return None
+    s = str(value).strip()
+    if not s:
+        return None
     try:
-        return Decimal(value.strip()) if value.strip() else None
+        return Decimal(s)
     except InvalidOperation:
         return None
 
 
-def parse_csv(filepath: str | Path) -> list[dict]:
+def _norm_key(s: str) -> str:
+    return s.strip().lower().replace("_", " ")
+
+
+def _require(row_norm: dict, key: str, headers: list[str]) -> str:
+    if key not in row_norm:
+        raise KeyError(
+            f"Export is missing required column {key!r}. "
+            f"Headers found: {headers}"
+        )
+    return row_norm[key]
+
+
+def _build_txn(row_norm: dict, headers: list[str]) -> dict | None:
+    description = _require(row_norm, "description", headers).strip()
+    timestamp = _require(row_norm, "timestamp", headers).strip()
+    # New XLSX format has `amount` + `currency`; legacy CSV had `amount usd`.
+    if "amount usd" in row_norm:
+        amount_raw = row_norm["amount usd"]
+        currency = "USD"
+    else:
+        amount_raw = row_norm.get("amount", "")
+        currency = row_norm.get("currency", "USD").strip().upper() or "USD"
+    amount_raw_str = str(amount_raw).strip() if amount_raw is not None else ""
+
+    amount_usd = _parse_decimal(amount_raw_str)
+    if amount_usd is None:
+        return None
+    # We only track USD-denominated amounts in `amount_usd`; skip foreign-currency
+    # card spends rather than store mixed currencies under one column.
+    if currency != "USD":
+        _log.info("Skipping non-USD txn (%s %s): %s", amount_raw_str, currency, description)
+        return None
+
+    ts_normalized = _normalize_timestamp(timestamp)
+    return {
+        "timestamp": ts_normalized,
+        "type": row_norm.get("type", "").strip(),
+        "description": description,
+        "status": row_norm.get("status", "").strip(),
+        "amount_usd": amount_usd,
+        "card": row_norm.get("card", "").strip(),
+        "card_holder": row_norm.get("card holder name", "").strip() or None,
+        "original_amount": _parse_decimal(row_norm.get("original amount", "")),
+        "original_currency": row_norm.get("original currency", "").strip() or None,
+        "cashback": _parse_decimal(row_norm.get("cashback earned", "")),
+        "category": row_norm.get("category", "").strip() or None,
+        "dedup_key": db.make_dedup_key(ts_normalized, amount_raw_str, description),
+    }
+
+
+def _is_xlsx(filepath: str | Path) -> bool:
+    with open(filepath, "rb") as f:
+        return f.read(4) == b"PK\x03\x04"
+
+
+def _parse_xlsx(filepath: str | Path) -> list[dict]:
+    """Parse the Ether.fi XLSX export. Header row is auto-detected by looking
+    for a row that contains both 'timestamp' and 'description' cells."""
+    import io
+    from openpyxl import load_workbook
+
+    # Wrap in BytesIO — openpyxl rejects .csv extensions by name even when the
+    # file content is a valid xlsx (Ether.fi mislabels their download).
+    buf = io.BytesIO(Path(filepath).read_bytes())
+    wb = load_workbook(buf, read_only=True, data_only=True)
+    sheet_name = "All Transactions" if "All Transactions" in wb.sheetnames else wb.sheetnames[0]
+    ws = wb[sheet_name]
+
+    headers: list[str] | None = None
     rows: list[dict] = []
-    with open(filepath, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            description = row["description"].strip()
-            timestamp = row["timestamp"].strip()
-            amount_usd_raw = row["amount USD"].strip()
-            status = row["status"].strip()
+    for raw_row in ws.iter_rows(values_only=True):
+        if headers is None:
+            normalized = [_norm_key(str(c)) if c is not None else "" for c in raw_row]
+            if "timestamp" in normalized and "description" in normalized:
+                headers = normalized
+            continue
 
-            amount_usd = _parse_decimal(amount_usd_raw)
-            if amount_usd is None:
+        row_norm: dict = {}
+        for h, v in zip(headers, raw_row):
+            if not h:
                 continue
+            if v is None:
+                row_norm[h] = ""
+            elif isinstance(v, datetime):
+                row_norm[h] = v.isoformat() if v.tzinfo else v.replace(tzinfo=timezone.utc).isoformat()
+            else:
+                row_norm[h] = v if isinstance(v, (int, float, Decimal)) else str(v)
 
-            ts_normalized = _normalize_timestamp(timestamp)
-            txn = {
-                "timestamp": ts_normalized,
-                "type": row["type"].strip(),
-                "description": description,
-                "status": status,
-                "amount_usd": amount_usd,
-                "card": row["card"].strip(),
-                "card_holder": row.get("card holder name", "").strip() or None,
-                "original_amount": _parse_decimal(row.get("original amount", "")),
-                "original_currency": row.get("original currency", "").strip() or None,
-                "cashback": _parse_decimal(row.get("cashback earned", "")),
-                "category": row.get("category", "").strip() or None,
-                "dedup_key": db.make_dedup_key(ts_normalized, amount_usd_raw, description),
-            }
+        if not any(str(v).strip() for v in row_norm.values()):
+            continue
+        txn = _build_txn(row_norm, headers)
+        if txn:
             rows.append(txn)
+
+    if headers is None:
+        raise KeyError(
+            f"XLSX has no recognizable header row in sheet {sheet_name!r}. "
+            f"Expected 'timestamp' and 'description' columns."
+        )
     return rows
+
+
+def _parse_csv_text(filepath: str | Path) -> list[dict]:
+    rows: list[dict] = []
+    with open(filepath, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        headers = [_norm_key(h) for h in (reader.fieldnames or [])]
+        for row in reader:
+            row_norm = {_norm_key(k): (v or "") for k, v in row.items() if k is not None}
+            txn = _build_txn(row_norm, headers)
+            if txn:
+                rows.append(txn)
+    return rows
+
+
+def parse_csv(filepath: str | Path) -> list[dict]:
+    """Parse an Ether.fi transaction export (legacy CSV or new XLSX)."""
+    if _is_xlsx(filepath):
+        return _parse_xlsx(filepath)
+    return _parse_csv_text(filepath)
 
 
 def import_csv(filepath: str | Path) -> int:
