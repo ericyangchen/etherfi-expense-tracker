@@ -339,12 +339,12 @@ async def cmd_report_daily(
             "Scrape failed (see message above). No daily report."
         )
         return
-    if year is not None and month is not None and day is not None:
-        txns = db.get_transactions_for_date(year, month, day)
-        date_str = f"{year}/{month:02d}/{day:02d}"
-    else:
-        txns = db.get_today_transactions()
-        date_str = datetime.now().strftime("%Y/%m/%d")
+    today = datetime.now()
+    y = year if year is not None else today.year
+    m = month if month is not None else today.month
+    d = day if day is not None else today.day
+    txns = db.get_transactions_for_date(y, m, d)
+    date_str = f"{y}/{m:02d}/{d:02d}"
     if not txns:
         await interaction.followup.send(
             f"No transactions for {date_str}."
