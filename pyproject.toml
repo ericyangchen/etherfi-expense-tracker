@@ -12,5 +12,8 @@ dependencies = [
     "python-dateutil",
 ]
 
+[dependency-groups]
+dev = ["pytest"]
+
 [project.scripts]
 etherfi = "main:cli"
