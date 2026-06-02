@@ -284,14 +284,60 @@ def set_category_cards(category: str, cards: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def make_dedup_key(timestamp: str, amount_usd: str, description: str) -> str:
+# Funding types that share one logical identity across their lifecycle.
+_TYPE_FAMILY = {"pending_topup": "topup"}
+
+# Higher = more final; used to choose the surviving type when merging funding rows.
+_TYPE_FINALITY = {"pending_topup": 0, "topup": 1}
+
+
+def type_family(type_: str) -> str:
+    return _TYPE_FAMILY.get(type_, type_)
+
+
+def type_family_members(type_: str) -> list[str]:
+    fam = type_family(type_)
+    members = {fam}
+    members.update(t for t, f in _TYPE_FAMILY.items() if f == fam)
+    return sorted(members)
+
+
+def more_final_type(a: str, b: str) -> str:
+    return a if _TYPE_FINALITY.get(a, 1) >= _TYPE_FINALITY.get(b, 1) else b
+
+
+def _norm_amount(amount_usd: str) -> str:
     from decimal import Decimal, InvalidOperation
 
     try:
-        amt_norm = f"{Decimal(amount_usd.strip()):.2f}"
+        return f"{Decimal(str(amount_usd).strip()):.2f}"
     except (InvalidOperation, AttributeError):
-        amt_norm = amount_usd.strip()
-    raw = f"{timestamp}|{amt_norm}|{description.strip()}"
+        return str(amount_usd).strip()
+
+
+def _ts_to_second(timestamp: str) -> str:
+    """Canonical UTC ISO truncated to whole seconds. Input is already a
+    normalized ISO string from csv_import._normalize_timestamp; pass through
+    but defensively re-truncate if microseconds slipped in."""
+    try:
+        dt = datetime.fromisoformat(timestamp)
+    except (ValueError, TypeError):
+        return timestamp
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def make_dedup_key(
+    card: str | None,
+    type_: str,
+    timestamp: str,
+    amount_usd: str,
+    description: str,
+) -> str:
+    ts = _ts_to_second(timestamp)
+    if card and str(card).strip():
+        raw = f"{str(card).strip()}|{type_}|{ts}"
+    else:
+        raw = f"{type_family(type_)}|{_norm_amount(amount_usd)}|{description.strip()}|{ts}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
