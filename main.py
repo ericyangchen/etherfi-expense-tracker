@@ -50,7 +50,7 @@ def cmd_scrape(args: argparse.Namespace) -> None:
     else:
         print("[scrape] No transactions scraped (selectors may need updating)")
 
-    dupes = db.deduplicate_transactions()
+    dupes = db.merge_duplicate_transactions()
     if dupes:
         print(f"[scrape] Cleaned {dupes} duplicate(s)")
 
@@ -67,7 +67,7 @@ def cmd_import(args: argparse.Namespace) -> None:
     print(f"[import] Importing {filepath}...")
     txns = csv_import.parse_csv(filepath)
     affected = db.upsert_transactions(txns)
-    dupes = db.deduplicate_transactions()
+    dupes = db.merge_duplicate_transactions()
     if dupes:
         print(f"[import] Cleaned {dupes} duplicate(s)")
     print(f"[import] Processed {len(txns)} transactions ({affected} new/updated)")
@@ -167,6 +167,26 @@ def cmd_card(args: argparse.Namespace) -> None:
         print(f"  Removed card {args.card_number}")
 
 
+def cmd_dedup_migrate(args: argparse.Namespace) -> None:
+    _init()
+    import db
+
+    with db.get_conn() as conn:
+        if not args.execute:
+            rows = conn.execute("SELECT * FROM transactions ORDER BY id").fetchall()
+            print(f"[dedup-migrate] DRY RUN over {len(rows)} rows.")
+            print("[dedup-migrate] Re-run with --execute to back up and apply.")
+            return
+
+        conn.execute("DROP TABLE IF EXISTS transactions_backup")
+        conn.execute("CREATE TABLE transactions_backup AS SELECT * FROM transactions")
+        print("[dedup-migrate] Backup written to table transactions_backup.")
+
+    deleted = db.merge_duplicate_transactions()
+    rekeyed = db.recompute_dedup_keys()
+    print(f"[dedup-migrate] Merged/deleted {deleted} duplicate row(s); rekeyed {rekeyed}.")
+
+
 # ---------------------------------------------------------------------------
 # CLI parser
 # ---------------------------------------------------------------------------
@@ -226,6 +246,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_card_rm = card_sub.add_parser("remove", help="Remove a card")
     p_card_rm.add_argument("card_number", help="Card last 4 digits")
 
+    # dedup-migrate
+    p_migrate = sub.add_parser("dedup-migrate", help="One-time: merge legacy duplicates + rekey")
+    p_migrate.add_argument("--execute", action="store_true",
+                           help="Back up + apply (default is dry-run)")
+
     return parser
 
 
@@ -242,6 +267,7 @@ def cli() -> None:
         "gui": cmd_gui,
         "config": cmd_config,
         "card": cmd_card,
+        "dedup-migrate": cmd_dedup_migrate,
     }
     dispatch[args.command](args)
 
