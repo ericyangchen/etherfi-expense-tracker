@@ -637,12 +637,12 @@ def recompute_dedup_keys() -> int:
     updated = 0
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, timestamp, amount_usd, description FROM transactions"
+            "SELECT id, card, type, timestamp, amount_usd, description FROM transactions"
         ).fetchall()
         for row in rows:
             ts = row["timestamp"].astimezone(timezone.utc).replace(microsecond=0).isoformat()
             amt = f"{row['amount_usd']:.2f}"
-            new_key = make_dedup_key(ts, amt, row["description"])
+            new_key = make_dedup_key(row["card"], row["type"], ts, amt, row["description"])
             result = conn.execute(
                 "UPDATE transactions SET dedup_key = %s WHERE id = %s AND dedup_key IS DISTINCT FROM %s",
                 (new_key, row["id"], new_key),
@@ -651,29 +651,69 @@ def recompute_dedup_keys() -> int:
     return updated
 
 
-def deduplicate_transactions() -> int:
-    """Remove duplicate rows caused by sub-second timestamp drift.
+def merge_duplicate_transactions() -> int:
+    """Merge existing duplicate rows under the stable-identity rules.
 
-    Keeps the row with the newest updated_at (or lowest id as tiebreaker)
-    among rows that share the same (second-truncated timestamp, amount, description).
+    Card rows: group by (card, type, second); keep the most-final row
+    (CLEARED > others; tie-break newer updated_at, then lower id).
+    Funding rows: cluster by (type_family, amount, description) within 5s;
+    keep the more-final type. Any non-null reported_at in a group is preserved
+    on the survivor so settled transactions are not reported again.
     Returns the number of rows deleted.
     """
-    sql = """
-    DELETE FROM transactions
-    WHERE id IN (
-        SELECT id FROM (
-            SELECT id,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY DATE_TRUNC('second', timestamp),
-                                    amount_usd,
-                                    description
-                       ORDER BY updated_at DESC NULLS LAST, id DESC
-                   ) AS rn
-            FROM transactions
-        ) ranked
-        WHERE rn > 1
-    )
-    """
+    from collections import defaultdict
+
+    deleted = 0
     with get_conn() as conn:
-        result = conn.execute(sql)
-        return result.rowcount
+        rows = conn.execute("SELECT * FROM transactions ORDER BY id").fetchall()
+
+        card_groups: dict[tuple, list[dict]] = defaultdict(list)
+        funding_rows: list[dict] = []
+        for r in rows:
+            if (r["card"] or "").strip():
+                key = (r["card"], r["type"], r["timestamp"].replace(microsecond=0))
+                card_groups[key].append(r)
+            else:
+                funding_rows.append(r)
+
+        groups: list[list[dict]] = [g for g in card_groups.values() if len(g) > 1]
+
+        # Funding: cluster by (family, amount, description), then split on >5s gaps.
+        fund_buckets: dict[tuple, list[dict]] = defaultdict(list)
+        for r in funding_rows:
+            fund_buckets[(type_family(r["type"]), r["amount_usd"], r["description"])].append(r)
+        for bucket in fund_buckets.values():
+            bucket.sort(key=lambda r: r["timestamp"])
+            cluster = [bucket[0]]
+            for r in bucket[1:]:
+                if (r["timestamp"] - cluster[-1]["timestamp"]).total_seconds() <= 5:
+                    cluster.append(r)
+                else:
+                    if len(cluster) > 1:
+                        groups.append(cluster)
+                    cluster = [r]
+            if len(cluster) > 1:
+                groups.append(cluster)
+
+        for group in groups:
+            survivor = _pick_survivor(group)
+            reported = next((g["reported_at"] for g in group if g["reported_at"]), None)
+            loser_ids = [g["id"] for g in group if g["id"] != survivor["id"]]
+            if reported and not survivor["reported_at"]:
+                conn.execute(
+                    "UPDATE transactions SET reported_at = %s WHERE id = %s",
+                    (reported, survivor["id"]),
+                )
+            conn.execute("DELETE FROM transactions WHERE id = ANY(%s)", (loser_ids,))
+            deleted += len(loser_ids)
+    return deleted
+
+
+def _pick_survivor(group: list[dict]) -> dict:
+    def rank(r: dict) -> tuple:
+        cleared = 1 if r["status"] == "CLEARED" else 0
+        final_type = _TYPE_FINALITY.get(r["type"], 1)
+        updated = r["updated_at"].timestamp() if r["updated_at"] else 0
+        return (cleared, final_type, updated, r["id"])
+
+    return max(group, key=rank)
