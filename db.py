@@ -356,22 +356,55 @@ VALUES
      %(cashback)s, %(category)s, %(dedup_key)s)
 ON CONFLICT (dedup_key) DO UPDATE SET
     status = EXCLUDED.status,
+    description = EXCLUDED.description,
     amount_usd = EXCLUDED.amount_usd,
     original_amount = EXCLUDED.original_amount,
     cashback = EXCLUDED.cashback,
     updated_at = NOW()
 WHERE transactions.status IS DISTINCT FROM EXCLUDED.status
-   OR transactions.amount_usd IS DISTINCT FROM EXCLUDED.amount_usd;
+   OR transactions.amount_usd IS DISTINCT FROM EXCLUDED.amount_usd
+   OR transactions.description IS DISTINCT FROM EXCLUDED.description;
 """
+
+
+def _upsert_one(conn, txn: dict[str, Any]) -> int:
+    card = (txn.get("card") or "").strip()
+    if card:
+        conn.execute(
+            "INSERT INTO cards (card) VALUES (%s) ON CONFLICT (card) DO NOTHING",
+            (card,),
+        )
+        return conn.execute(_UPSERT_SQL, txn).rowcount
+    return _upsert_funding(conn, txn)
+
+
+def _upsert_funding(conn, txn: dict[str, Any]) -> int:
+    members = type_family_members(txn["type"])
+    existing = conn.execute(
+        """SELECT id, type FROM transactions
+           WHERE type = ANY(%s)
+             AND amount_usd = %s
+             AND description = %s
+             AND abs(EXTRACT(EPOCH FROM (timestamp - %s::timestamptz))) <= 5
+           ORDER BY id
+           LIMIT 1""",
+        (members, txn["amount_usd"], txn["description"], txn["timestamp"]),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            """UPDATE transactions
+               SET type = %s, status = %s, updated_at = NOW()
+               WHERE id = %s""",
+            (more_final_type(existing["type"], txn["type"]), txn["status"], existing["id"]),
+        )
+        return 1
+    conn.execute(_UPSERT_SQL, txn)
+    return 1
 
 
 def upsert_transaction(txn: dict[str, Any]) -> None:
     with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO cards (card) VALUES (%s) ON CONFLICT (card) DO NOTHING",
-            (txn["card"],),
-        )
-        conn.execute(_UPSERT_SQL, txn)
+        _upsert_one(conn, txn)
 
 
 def upsert_transactions(txns: list[dict[str, Any]]) -> int:
@@ -379,12 +412,7 @@ def upsert_transactions(txns: list[dict[str, Any]]) -> int:
     count = 0
     with get_conn() as conn:
         for txn in txns:
-            conn.execute(
-                "INSERT INTO cards (card) VALUES (%s) ON CONFLICT (card) DO NOTHING",
-                (txn["card"],),
-            )
-            result = conn.execute(_UPSERT_SQL, txn)
-            count += result.rowcount
+            count += _upsert_one(conn, txn)
     return count
 
 

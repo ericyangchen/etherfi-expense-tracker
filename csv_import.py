@@ -112,7 +112,13 @@ def _build_txn(row_norm: dict, headers: list[str]) -> dict | None:
         "original_currency": row_norm.get("original currency", "").strip() or None,
         "cashback": _parse_decimal(row_norm.get("cashback earned", "")),
         "category": row_norm.get("category", "").strip() or None,
-        "dedup_key": db.make_dedup_key(ts_normalized, amount_raw_str, description),
+        "dedup_key": db.make_dedup_key(
+            row_norm.get("card", "").strip(),
+            row_norm.get("type", "").strip(),
+            ts_normalized,
+            amount_raw_str,
+            description,
+        ),
     }
 
 
