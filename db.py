@@ -425,7 +425,7 @@ def get_unreported_transactions() -> list[dict[str, Any]]:
     with get_conn() as conn:
         return conn.execute(
             """SELECT * FROM transactions
-               WHERE reported_at IS NULL AND status != 'CANCELLED'
+               WHERE reported_at IS NULL AND status NOT IN ('CANCELLED', 'DECLINED')
                ORDER BY timestamp DESC"""
         ).fetchall()
 
@@ -447,7 +447,8 @@ def get_today_transactions() -> list[dict[str, Any]]:
     with get_conn() as conn:
         return conn.execute(
             """SELECT * FROM transactions
-               WHERE timestamp >= %s AND timestamp < %s AND status != 'CANCELLED'
+               WHERE timestamp >= %s AND timestamp < %s
+                 AND status NOT IN ('CANCELLED', 'DECLINED')
                ORDER BY timestamp DESC""",
             (start, end),
         ).fetchall()
@@ -462,7 +463,8 @@ def get_transactions_for_date(
     with get_conn() as conn:
         return conn.execute(
             """SELECT * FROM transactions
-               WHERE timestamp >= %s AND timestamp < %s AND status != 'CANCELLED'
+               WHERE timestamp >= %s AND timestamp < %s
+                 AND status NOT IN ('CANCELLED', 'DECLINED')
                ORDER BY timestamp DESC""",
             (start, end),
         ).fetchall()
@@ -497,7 +499,7 @@ def get_monthly_totals_by_card(year: int, month: int) -> list[dict[str, Any]]:
         LEFT JOIN cards c ON t.card = c.card
         WHERE EXTRACT(YEAR FROM t.timestamp) = %s
           AND EXTRACT(MONTH FROM t.timestamp) = %s
-          AND t.status != 'CANCELLED'
+          AND t.status NOT IN ('CANCELLED', 'DECLINED')
           AND t.type IN ('card_spend', 'card_refund', 'physical_card_refund')
         GROUP BY t.card, c.nickname
         ORDER BY total DESC
@@ -516,7 +518,7 @@ def get_monthly_funding(year: int, month: int) -> list[dict[str, Any]]:
         FROM transactions
         WHERE EXTRACT(YEAR FROM timestamp) = %s
           AND EXTRACT(MONTH FROM timestamp) = %s
-          AND status != 'CANCELLED'
+          AND status NOT IN ('CANCELLED', 'DECLINED')
           AND type = ANY(%s)
         GROUP BY type
         ORDER BY total DESC
@@ -532,7 +534,7 @@ def get_monthly_funding_transactions(year: int, month: int) -> list[dict[str, An
         FROM transactions
         WHERE EXTRACT(YEAR FROM timestamp) = %s
           AND EXTRACT(MONTH FROM timestamp) = %s
-          AND status != 'CANCELLED'
+          AND status NOT IN ('CANCELLED', 'DECLINED')
           AND type = ANY(%s)
         ORDER BY timestamp DESC
     """
@@ -551,7 +553,7 @@ def get_top_merchants(
     conditions = [
         "EXTRACT(YEAR FROM t.timestamp) = %(year)s",
         "EXTRACT(MONTH FROM t.timestamp) = %(month)s",
-        "t.status != 'CANCELLED'",
+        "t.status NOT IN ('CANCELLED', 'DECLINED')",
         "t.type IN ('card_spend', 'card_refund', 'physical_card_refund')",
     ]
     params: dict[str, Any] = {"year": year, "month": month, "limit": limit}

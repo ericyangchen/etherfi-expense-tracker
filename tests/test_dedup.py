@@ -168,3 +168,48 @@ def test_merge_collapses_funding_within_5s(db_mod):
     rows = db.get_recent_transactions(10)
     assert len(rows) == 1
     assert rows[0]["type"] == "topup"
+
+
+# ---------------------------------------------------------------------------
+# Status filter: DECLINED (failed charge) must never count as spend
+# ---------------------------------------------------------------------------
+# Real case (June 2026): Trip.com authorized twice as DECLINED then CLEARED.
+# All three are real source rows with distinct timestamps, so they don't merge.
+# Reports filtered only `status != 'CANCELLED'`, so the two DECLINED attempts
+# were counted — inflating the merchant by 2x its real amount.
+
+
+def test_declined_excluded_from_monthly_totals(db_mod):
+    db = db_mod
+    db.upsert_transaction(_txn(db, card="8732", type_="card_spend",
+        ts="2026-06-05T05:23:40+00:00", amount="1511.95", desc="Trip.com", status="CLEARED"))
+    db.upsert_transaction(_txn(db, card="8732", type_="card_spend",
+        ts="2026-06-05T05:13:52+00:00", amount="1511.95", desc="Trip.com", status="DECLINED"))
+    db.upsert_transaction(_txn(db, card="8732", type_="card_spend",
+        ts="2026-06-05T05:13:56+00:00", amount="1511.95", desc="Trip.com", status="DECLINED"))
+    totals = db.get_monthly_totals_by_card(2026, 6)
+    assert len(totals) == 1
+    assert totals[0]["total"] == Decimal("1511.95")   # only the CLEARED charge
+    assert totals[0]["txn_count"] == 1
+
+
+def test_declined_excluded_from_top_merchants(db_mod):
+    db = db_mod
+    db.upsert_transaction(_txn(db, card="8732", type_="card_spend",
+        ts="2026-06-05T05:23:40+00:00", amount="1511.95", desc="Trip.com", status="CLEARED"))
+    db.upsert_transaction(_txn(db, card="8732", type_="card_spend",
+        ts="2026-06-05T05:13:52+00:00", amount="1511.95", desc="Trip.com", status="DECLINED"))
+    merchants = db.get_top_merchants(2026, 6)
+    assert len(merchants) == 1
+    assert merchants[0]["total"] == Decimal("1511.95")
+
+
+def test_pending_still_counts_as_spend(db_mod):
+    """A pending auth is real, not-yet-settled spend; it updates in place on
+    settlement, so it should remain counted (only CANCELLED/DECLINED drop out)."""
+    db = db_mod
+    db.upsert_transaction(_txn(db, card="8732", type_="card_spend",
+        ts="2026-06-09T16:49:03+00:00", amount="16.88", desc="EL REY TACOS", status="PENDING"))
+    totals = db.get_monthly_totals_by_card(2026, 6)
+    assert len(totals) == 1
+    assert totals[0]["total"] == Decimal("16.88")
