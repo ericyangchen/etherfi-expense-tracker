@@ -84,13 +84,60 @@ def _dismiss_popups(page: Page) -> None:
                 pass
 
 
-def _is_session_expired(page: Page) -> bool:
-    """Check if we got redirected to a login/connect-wallet page."""
+# Only an authenticated session gets a 2xx out of the cash API; a dead one 401s.
+_CASH_API_FRAGMENT = "/app/cash/api/"
+_AUTH_FAIL_STATUSES = (401, 403)
+
+# Text ether.fi renders only in its public (signed-out) shell. Keep these
+# distinctive: a bare "sign in" is a substring of merchant names like "DESIGN INC".
+_LOGGED_OUT_MARKERS = ("become a member", "connect wallet")
+
+
+def _watch_auth_failures(page: Page) -> list[str]:
+    """Record cash-API responses proving the session is no longer authenticated.
+
+    Install before navigating — the 401s arrive during page load. The returned
+    list fills in as responses come back.
+    """
+    failures: list[str] = []
+
+    def _on_response(response) -> None:
+        if (
+            _CASH_API_FRAGMENT in response.url
+            and response.status in _AUTH_FAIL_STATUSES
+        ):
+            failures.append(f"{response.status} {response.url}")
+
+    page.on("response", _on_response)
+    return failures
+
+
+def _is_session_expired(page: Page, auth_failures: list[str] | None = None) -> bool:
+    """Check whether the saved session is dead.
+
+    Ether.fi is a SPA, so an expired session neither redirects nor renders a
+    "Connect"/"Sign in" button: it 401s on the cash API and quietly paints the
+    public shell ("Become a Member" / "No transactions yet"). The URL and button
+    checks alone therefore let dead sessions straight through, which is why the
+    API response is the primary signal here.
+    """
+    if auth_failures:
+        _log.warning("Cash API rejected the session: %s", auth_failures[0])
+        return True
+
     current = page.url.lower()
     if "connect" in current or "login" in current or "sign" in current:
         return True
+
     btn = page.query_selector('button:has-text("Connect"), button:has-text("Sign in")')
-    return btn is not None and btn.is_visible()
+    if btn is not None and btn.is_visible():
+        return True
+
+    try:
+        body = page.inner_text("body").lower()
+    except Exception:
+        return False
+    return any(marker in body for marker in _LOGGED_OUT_MARKERS)
 
 
 def scrape() -> list[dict]:
@@ -110,12 +157,13 @@ def scrape() -> list[dict]:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(storage_state=config.AUTH_STATE_PATH)
         page = context.new_page()
+        auth_failures = _watch_auth_failures(page)
 
         # Go directly to transaction history page
         page.goto(TRANSACTION_HISTORY_URL, wait_until="load", timeout=60_000)
         page.wait_for_timeout(5000)
 
-        if _is_session_expired(page):
+        if _is_session_expired(page, auth_failures):
             browser.close()
             raise RuntimeError(
                 "Session expired. Run 'python main.py login' to re-authenticate."
@@ -123,9 +171,21 @@ def scrape() -> list[dict]:
 
         _dismiss_popups(page)
 
-        # Wait for page to stabilize (transaction list + download button render)
-        page.wait_for_selector("h2:has-text('Transactions')", timeout=15_000)
+        # Let the page settle. The heading renders in the signed-out shell too,
+        # so it proves nothing about auth and must not be fatal — the session
+        # check and the download button below are the real gates.
+        try:
+            page.wait_for_selector("h2:has-text('Transactions')", timeout=15_000)
+        except Exception:
+            _log.warning("Transactions heading never rendered; continuing anyway")
         page.wait_for_timeout(3000)
+
+        # Auth failures can land after the first check (late XHRs, slow hydration).
+        if _is_session_expired(page, auth_failures):
+            browser.close()
+            raise RuntimeError(
+                "Session expired. Run 'python main.py login' to re-authenticate."
+            )
 
         # Download button selectors (Ether.fi may minify class names in prod)
         download_selectors = [

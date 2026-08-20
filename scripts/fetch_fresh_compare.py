@@ -30,6 +30,7 @@ from scraper import (
     _auth_state_exists,
     _dismiss_popups,
     _is_session_expired,
+    _watch_auth_failures,
 )
 from playwright.sync_api import sync_playwright
 
@@ -47,13 +48,17 @@ def download_export() -> str:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(storage_state=config.AUTH_STATE_PATH)
         page = context.new_page()
+        auth_failures = _watch_auth_failures(page)
         page.goto(TRANSACTION_HISTORY_URL, wait_until="load", timeout=60_000)
         page.wait_for_timeout(5000)
-        if _is_session_expired(page):
+        if _is_session_expired(page, auth_failures):
             browser.close()
             raise RuntimeError("Session expired; run `python main.py login`.")
         _dismiss_popups(page)
-        page.wait_for_selector("h2:has-text('Transactions')", timeout=15_000)
+        try:
+            page.wait_for_selector("h2:has-text('Transactions')", timeout=15_000)
+        except Exception:
+            pass
         page.wait_for_timeout(3000)
 
         download_selectors = [
