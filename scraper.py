@@ -87,6 +87,10 @@ def login() -> None:
 
 TRANSACTION_HISTORY_URL = "https://www.ether.fi/app/cash/transaction-history"
 
+# Heading that marks the transaction list as rendered. See scrape() for why
+# this is scoped to :visible.
+_SETTLE_SELECTOR = ":is(h1,h2):has-text('Transactions'):visible"
+
 # Popup dismiss selectors (try in order; some promotions end and popups disappear)
 _POPUP_DISMISS_SELECTORS = [
     'button:has-text("OK")',
@@ -205,8 +209,14 @@ def scrape() -> list[dict]:
         # Let the page settle. The heading renders in the signed-out shell too,
         # so it proves nothing about auth and must not be fatal — the session
         # check and the download button below are the real gates.
+        #
+        # :visible is load-bearing. The page renders the heading twice as
+        # responsive duplicates, and the first in DOM order is the hidden one;
+        # wait_for_selector resolves the first match and then waits for *it*,
+        # so an unscoped selector burns the full timeout on a healthy page.
+        # The level moved h2 -> h1 once already (2026-09-02), hence :is().
         try:
-            page.wait_for_selector("h2:has-text('Transactions')", timeout=15_000)
+            page.wait_for_selector(_SETTLE_SELECTOR, timeout=15_000)
         except Exception:
             _log.warning("Transactions heading never rendered; continuing anyway")
         page.wait_for_timeout(3000)
