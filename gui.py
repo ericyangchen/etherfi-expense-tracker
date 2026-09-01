@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT))
 
 import config
 import db
+import session_status
 
 # ── Page config ────────────────────────────────────────────────────────────
 
@@ -106,33 +107,18 @@ def _fmt_usd(val) -> str:
 
 
 def _get_session_expiry() -> tuple[str, int]:
-    """Read auth_state.json and find the session cookie expiry.
+    """Dashboard label for the saved session's remaining life.
 
     Returns (label, days_remaining). Negative days = expired.
     """
-    try:
-        import json as _json
-
-        with open(config.AUTH_STATE_PATH) as f:
-            state = _json.load(f)
-        now_ts = datetime.now().timestamp()
-        session_exp = None
-        for cookie in state.get("cookies", []):
-            name = cookie.get("name", "")
-            exp = cookie.get("expires", -1)
-            if name.startswith("session_") and exp > 0:
-                session_exp = exp
-                break
-        if session_exp is None:
-            return "Unknown", 0
-        days = int((session_exp - now_ts) / 86400)
-        if days < 0:
-            return "Expired", days
-        if days <= 7:
-            return f"⚠️ {days}d left", days
-        return f"✅ {days}d left", days
-    except Exception:
-        return "N/A", 0
+    days = session_status.session_days_left(config.AUTH_STATE_PATH)
+    if days is None:
+        return "Unknown", 0
+    if days < 0:
+        return "Expired", days
+    if days <= session_status.WARN_WITHIN_DAYS:
+        return f"⚠️ {days}d left", days
+    return f"✅ {days}d left", days
 
 
 # ── Dashboard ──────────────────────────────────────────────────────────────

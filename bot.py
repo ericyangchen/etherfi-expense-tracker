@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -15,6 +13,7 @@ from discord.ext import tasks
 import config
 import db
 import analytics
+import session_status
 
 log = logging.getLogger("etherfi.bot")
 
@@ -179,27 +178,26 @@ class EtherfiBot(discord.Client):
     # ------------------------------------------------------------------
 
     async def _check_session_expiry(self) -> None:
-        """Warn in Discord if the auth session is expiring soon."""
-        if not self.channel or not os.path.isfile(config.AUTH_STATE_PATH):
+        """Warn in Discord if the auth session is expiring soon.
+
+        An early heads-up only: the cookie expiry is an upper bound, so a
+        scrape failing with "Session expired" remains the real signal.
+        """
+        if not self.channel:
             return
-        try:
-            with open(config.AUTH_STATE_PATH) as f:
-                state = json.load(f)
-            now_ts = datetime.now().timestamp()
-            for cookie in state.get("cookies", []):
-                if (
-                    cookie.get("name", "").startswith("session_")
-                    and cookie.get("expires", -1) > 0
-                ):
-                    days_left = int((cookie["expires"] - now_ts) / 86400)
-                    if days_left <= 7:
-                        await self.channel.send(
-                            f"⚠️ Ether.fi session expires in **{days_left} day(s)**. "
-                            "Run `python main.py login` to refresh."
-                        )
-                    return
-        except Exception:
-            pass
+        days_left = session_status.session_days_left(config.AUTH_STATE_PATH)
+        if days_left is None:
+            return
+        if days_left < 0:
+            await self.channel.send(
+                "⚠️ Ether.fi session has **expired**. "
+                "Run `python main.py login` to refresh."
+            )
+        elif days_left <= session_status.WARN_WITHIN_DAYS:
+            await self.channel.send(
+                f"⚠️ Ether.fi session expires in at most **{days_left} day(s)**. "
+                "Run `python main.py login` to refresh."
+            )
 
     async def _run_scrape(self) -> bool:
         """Run the scraper in a thread. Returns True on success, False on failure (sends noti)."""
