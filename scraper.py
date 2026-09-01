@@ -29,13 +29,44 @@ def _ensure_data_dir() -> None:
 # Login flow (headed browser, manual wallet connect)
 # ---------------------------------------------------------------------------
 
+# Identity providers refuse to sign you in from a browser that advertises
+# automation. Playwright's bundled Chromium reports navigator.webdriver=true
+# behind a "HeadlessChrome" user agent, and Google's sign-in page answers
+# "This browser or app may not be secure." The real Chrome binary with these
+# two switches stripped reports webdriver=false and a plain "Chrome/152" UA,
+# which the sign-in flow accepts.
+_ANTI_AUTOMATION_ARGS = ["--disable-blink-features=AutomationControlled"]
+_AUTOMATION_DEFAULT_ARGS = ["--enable-automation"]
+
+
+def _launch_login_browser(p):
+    """Headed browser for manual sign-in, preferring the real Chrome install.
+
+    Falls back to the bundled Chromium if Chrome is not present — sign-in may
+    be rejected there, but a blocked login beats no browser at all.
+    """
+    try:
+        return p.chromium.launch(
+            headless=False,
+            channel="chrome",
+            args=_ANTI_AUTOMATION_ARGS,
+            ignore_default_args=_AUTOMATION_DEFAULT_ARGS,
+        )
+    except Exception as e:
+        _log.warning(
+            "Could not launch the real Chrome install (%s); falling back to "
+            "bundled Chromium. Google may reject it as an unsafe browser.", e
+        )
+        return p.chromium.launch(headless=False)
+
+
 def login() -> None:
     """Launch headed browser for manual wallet login, then save session."""
     _ensure_data_dir()
     etherfi_url = db.get_config("etherfi_url")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = _launch_login_browser(p)
         context = browser.new_context()
         page = context.new_page()
         page.goto(etherfi_url)
