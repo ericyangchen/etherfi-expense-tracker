@@ -104,6 +104,13 @@ _POPUP_DISMISS_SELECTORS = [
     'button:has-text("Close")',
 ]
 
+# Ether.fi's modals are radix dialogs. Some promos ship with no close control
+# at all — the 2026-09-15 "Pre-order an iPhone 18" modal has only an <a> CTA —
+# so every button selector above misses, and its full-screen overlay swallows
+# the download click until it times out. Radix closes on Escape.
+_OPEN_DIALOG_SELECTOR = '[role="dialog"][data-state="open"]'
+_MAX_ESCAPE_PRESSES = 3
+
 
 def _dismiss_popups(page: Page) -> None:
     """Try to dismiss any modal/popup. Flexible — popups may or may not exist."""
@@ -117,6 +124,14 @@ def _dismiss_popups(page: Page) -> None:
                 break
             except Exception:
                 pass
+
+    for _ in range(_MAX_ESCAPE_PRESSES):
+        dialog = page.query_selector(_OPEN_DIALOG_SELECTOR)
+        if dialog is None or not dialog.is_visible():
+            return
+        _log.info("Dialog still open after dismiss pass; pressing Escape")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(1000)
 
 
 # Only an authenticated session gets a 2xx out of the cash API; a dead one 401s.
