@@ -17,6 +17,18 @@ import session_status
 
 log = logging.getLogger("etherfi.bot")
 
+# Discord rejects a message over its length limit with a 400, and Playwright
+# timeouts carry their whole retry log (tens of KB) in str(e). Post only the
+# headline; the full text is in the bot log.
+_ERROR_HEADLINE_CHARS = 300
+
+
+def _short_error(e: BaseException) -> str:
+    """First line of an exception message, capped for a Discord post."""
+    text = str(e)
+    headline = text.splitlines()[0] if text.strip() else type(e).__name__
+    return headline[:_ERROR_HEADLINE_CHARS]
+
 
 class EtherfiBot(discord.Client):
     def __init__(self) -> None:
@@ -213,7 +225,12 @@ class EtherfiBot(discord.Client):
         except Exception as e:
             log.error(f"Scrape failed: {e}")
             if self.channel:
-                await self.channel.send(f"Scrape error: {e}")
+                try:
+                    await self.channel.send(
+                        f"Scrape error: {_short_error(e)} (full error in bot logs)"
+                    )
+                except Exception as send_err:
+                    log.error(f"Could not post scrape error to Discord: {send_err}")
             return False
 
     async def _send_long(self, channel: discord.abc.Messageable, text: str) -> None:
