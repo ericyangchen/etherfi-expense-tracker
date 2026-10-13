@@ -190,10 +190,69 @@ def _is_session_expired(page: Page, auth_failures: list[str] | None = None) -> b
     return any(marker in body for marker in _LOGGED_OUT_MARKERS)
 
 
+# Since ~2026-10-09 the download button opens a "Documents & Statements" radix
+# modal instead of downloading: pick a document type and a period, then
+# "Download CSV". The modal closes itself after every download.
+#
+# Periods are calendar-bounded. "Month to date" is the only one that includes
+# today; "Last month" (the modal's default) and the multi-month presets all end
+# on the last day of the previous month. Exporting both keeps today's rows and
+# still catches last month's PENDING rows that clear after the 1st.
+_EXPORT_DIALOG_SELECTOR = '[role="dialog"][data-state="open"]:has-text("Documents")'
+_EXPORT_PERIODS = ("Last month", "Month to date")
+
+
+def _download_export(page: Page, trigger, period: str) -> list[dict]:
+    """Open the export modal, download one period's CSV and parse it."""
+    trigger.scroll_into_view_if_needed()
+    trigger.click()
+    dialog = page.locator(_EXPORT_DIALOG_SELECTOR)
+    dialog.wait_for(state="visible", timeout=10_000)
+    dialog.get_by_role("button", name="Transaction History").click()
+    dialog.get_by_role("button", name=period, exact=True).click()
+
+    with page.expect_download(timeout=30_000) as download_info:
+        dialog.get_by_role("button", name="Download CSV", exact=True).click()
+
+    download = download_info.value
+    with tempfile.NamedTemporaryFile(
+        suffix=".csv", delete=False
+    ) as f:
+        tmp_path = f.name
+    download.save_as(tmp_path)
+    try:
+        txns = parse_csv(tmp_path)
+    except Exception as e:
+        debug_dir = Path(config.AUTH_STATE_PATH).parent / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        debug_path = debug_dir / f"failed_{datetime.now():%Y%m%d_%H%M%S}.csv"
+        shutil.copyfile(tmp_path, debug_path)
+        _log.error("CSV parse failed (%s); saved raw to %s", e, debug_path)
+        raise RuntimeError(f"CSV parse failed: {e}. Raw CSV at {debug_path}")
+    finally:
+        os.unlink(tmp_path)
+
+    # The next export reopens the modal; clicking the trigger mid-close misses.
+    dialog.wait_for(state="hidden", timeout=10_000)
+    return txns
+
+
+def _export_transactions(page: Page, trigger) -> list[dict]:
+    """Export every period in _EXPORT_PERIODS, merged on dedup_key."""
+    merged: dict[str, dict] = {}
+    for period in _EXPORT_PERIODS:
+        txns = _download_export(page, trigger, period)
+        _log.info("Exported %d transactions for %r", len(txns), period)
+        for txn in txns:
+            merged[txn["dedup_key"]] = txn
+    return list(merged.values())
+
+
 def scrape() -> list[dict]:
     """
     Run a headless scrape using saved session state.
-    Navigates to transaction-history, dismisses popups, clicks download CSV.
+    Navigates to transaction-history, dismisses popups, exports CSVs via the
+    Documents & Statements modal (see _EXPORT_PERIODS).
     Returns list of transaction dicts ready for DB upsert.
     Raises RuntimeError if session is expired.
     """
@@ -267,29 +326,7 @@ def scrape() -> list[dict]:
                 "Page may have changed or a popup may be blocking it."
             )
 
-        download_btn.scroll_into_view_if_needed()
-        page.wait_for_timeout(500)
-
-        with page.expect_download(timeout=30_000) as download_info:
-            download_btn.click()
-
-        download = download_info.value
-        with tempfile.NamedTemporaryFile(
-            suffix=".csv", delete=False
-        ) as f:
-            tmp_path = f.name
-        download.save_as(tmp_path)
-        try:
-            txns = parse_csv(tmp_path)
-        except Exception as e:
-            debug_dir = Path(config.AUTH_STATE_PATH).parent / "debug"
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            debug_path = debug_dir / f"failed_{datetime.now():%Y%m%d_%H%M%S}.csv"
-            shutil.copyfile(tmp_path, debug_path)
-            _log.error("CSV parse failed (%s); saved raw to %s", e, debug_path)
-            raise RuntimeError(f"CSV parse failed: {e}. Raw CSV at {debug_path}")
-        finally:
-            os.unlink(tmp_path)
+        txns = _export_transactions(page, download_btn)
 
         # Save updated session state
         context.storage_state(path=config.AUTH_STATE_PATH)
